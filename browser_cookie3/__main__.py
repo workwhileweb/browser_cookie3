@@ -3,6 +3,7 @@
 import argparse
 import browser_cookie3
 import json
+import sys
 
 
 def parse_args(args=None):
@@ -26,6 +27,10 @@ def parse_args(args=None):
                    help="Use specific cookie file (default is to autodetect).")
     g.add_argument('-k', '--key-file',
                    help="Use specific key file (default is to autodetect).")
+    g.add_argument('-p', '--profile',
+                   help="Use specific profile name (e.g., 'Default', 'Profile 1', or Firefox profile name).")
+    g.add_argument('-l', '--list-profiles', action='store_true',
+                   help="List all available profiles for the specified browser and exit.")
 
     args = p.parse_args(args)
 
@@ -38,11 +43,51 @@ def parse_args(args=None):
 def main(args=None):
     p, args = parse_args(args)
 
+    # Handle list-profiles option
+    if args.list_profiles:
+        if not args.browser:
+            p.error("Must specify a browser with --list-profiles (e.g., --chrome, --firefox)")
+        
+        # Map browser function to browser name
+        browser_names = {
+            browser_cookie3.chrome: 'chrome',
+            browser_cookie3.arc: 'arc',
+            browser_cookie3.chromium: 'chromium',
+            browser_cookie3.opera: 'opera',
+            browser_cookie3.opera_gx: 'opera_gx',
+            browser_cookie3.brave: 'brave',
+            browser_cookie3.edge: 'edge',
+            browser_cookie3.vivaldi: 'vivaldi',
+            browser_cookie3.firefox: 'firefox',
+            browser_cookie3.librewolf: 'librewolf',
+        }
+        
+        browser_name = browser_names.get(args.browser, 'unknown')
+        try:
+            profiles = browser_cookie3.list_profiles(browser_name)
+            if profiles:
+                for profile in profiles:
+                    print(profile)
+            else:
+                print(f'No profiles found for {browser_name}', file=sys.stderr)
+                raise SystemExit(1)
+        except browser_cookie3.BrowserCookieError as e:
+            p.error(e.args[0])
+        return
+
     try:
         if args.browser:
-            cj = args.browser(cookie_file=args.cookie_file, key_file=args.key_file)
+            # Build kwargs for browser function
+            browser_kwargs = {}
+            if args.cookie_file:
+                browser_kwargs['cookie_file'] = args.cookie_file
+            if args.key_file:
+                browser_kwargs['key_file'] = args.key_file
+            if args.profile:
+                browser_kwargs['profile_name'] = args.profile
+            cj = args.browser(**browser_kwargs)
         else:
-            cj = browser_cookie3.load()
+            cj = browser_cookie3.load(profile_name=args.profile if args.profile else None)
     except browser_cookie3.BrowserCookieError as e:
         p.error(e.args[0])
 

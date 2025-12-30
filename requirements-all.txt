@@ -1,0 +1,23 @@
+# All dependencies for browser_cookie3
+# This includes core, examples, and platform-specific dependencies
+# Install with: pip install -r requirements-all.txt
+#
+# Note: Platform-specific dependencies will be automatically skipped
+# if not applicable to your platform and Python version.
+
+# Core dependencies (required on all platforms)
+lz4>=0.10.0
+pycryptodomex>=3.4.0
+
+# Linux/BSD dependencies
+# jeepney for Python >= 3.7
+jeepney>=0.4.0; python_version >= "3.7" and ("bsd" in sys_platform or sys_platform == "linux")
+# dbus-python for Python < 3.7
+dbus-python>=1.2.0; python_version < "3.7" and ("bsd" in sys_platform or sys_platform == "linux")
+
+# Windows dependencies (Python >= 3.7)
+shadowcopy>=0.1.0; python_version >= "3.7" and platform_system == "Windows"
+
+# For running examples (optional)
+requests>=2.25.0
+

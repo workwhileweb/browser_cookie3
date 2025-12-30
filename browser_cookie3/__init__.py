@@ -153,6 +153,11 @@ def _expand_paths(paths: list, os_name: str):
     return next(_expand_paths_impl(paths, os_name), None)
 
 
+def _expand_paths_all(paths: list, os_name: str):
+    """Expands paths and returns all matches as a list"""
+    return list(_expand_paths_impl(paths, os_name))
+
+
 def _normalize_genarate_paths_chromium(paths: Union[str, list], channel: Union[str, list] = None):
     channel = channel or ['']
     if not isinstance(channel, list):
@@ -434,7 +439,7 @@ class ChromiumBased:
     # seconds from 1601-01-01T00:00:00Z to 1970-01-01T00:00:00Z
     UNIX_TO_NT_EPOCH_OFFSET = 11644473600
 
-    def __init__(self, browser: str, cookie_file=None, domain_name="", key_file=None, **kwargs):
+    def __init__(self, browser: str, cookie_file=None, domain_name="", key_file=None, profile_name=None, **kwargs):
         self.salt = b'saltysalt'
         self.iv = b' ' * 16
         self.length = 16
@@ -442,6 +447,7 @@ class ChromiumBased:
         self.cookie_file = cookie_file
         self.domain_name = domain_name
         self.key_file = key_file
+        self.profile_name = profile_name
         self.__add_key_and_cookie_file(**kwargs)
 
     def __add_key_and_cookie_file(self,
@@ -453,7 +459,7 @@ class ChromiumBased:
                 osx_key_service, osx_key_user)
             iterations = 1003  # number of pbkdf2 iterations on mac
             self.v10_key = PBKDF2(password, self.salt, self.length, iterations)
-            cookie_file = self.cookie_file or _expand_paths(osx_cookies, 'osx')
+            cookie_file = self.cookie_file or self.__find_cookie_file_with_profile(osx_cookies, 'osx')
 
         elif sys.platform.startswith('linux') or 'bsd' in sys.platform.lower():
             password = _LinuxPasswordManager(
@@ -469,7 +475,7 @@ class ChromiumBased:
             self.v11_empty_key = PBKDF2(
                 b'', self.salt, self.length, iterations)
 
-            cookie_file = self.cookie_file or _expand_paths(
+            cookie_file = self.cookie_file or self.__find_cookie_file_with_profile(
                 linux_cookies, 'linux')
 
         elif sys.platform == "win32":
@@ -496,7 +502,7 @@ class ChromiumBased:
                 if self.browser.lower() == 'chrome' and _windows_group_policy_path():
                     cookie_file = _windows_group_policy_path()
                 else:
-                    cookie_file = _expand_paths(windows_cookies, 'windows')
+                    cookie_file = self.__find_cookie_file_with_profile(windows_cookies, 'windows')
 
         else:
             raise BrowserCookieError(
@@ -508,8 +514,140 @@ class ChromiumBased:
 
         self.cookie_file = cookie_file
 
+    def __find_cookie_file_with_profile(self, cookie_paths, os_name):
+        """Find cookie file, optionally filtering by profile_name"""
+        if not cookie_paths:
+            return None
+        
+        # If profile_name is specified, try to find that specific profile
+        if self.profile_name:
+            # Replace Profile * pattern with the specific profile name
+            specific_paths = []
+            profile_name_lower = self.profile_name.lower()
+            
+            for path in cookie_paths:
+                if 'Profile *' in path:
+                    # Try multiple formats:
+                    # 1. Exact profile name (e.g., "Profile 1")
+                    # 2. Profile {name} if name doesn't start with "Profile "
+                    # 3. Just the number if it's a number (e.g., "1" -> "Profile 1")
+                    specific_paths.append(path.replace('Profile *', self.profile_name))
+                    if not self.profile_name.startswith('Profile '):
+                        specific_paths.append(path.replace('Profile *', f'Profile {self.profile_name}'))
+                        # If it's just a number, also try "Profile {number}"
+                        try:
+                            int(self.profile_name)
+                            specific_paths.append(path.replace('Profile *', f'Profile {self.profile_name}'))
+                        except ValueError:
+                            pass
+                elif 'Default' in path:
+                    if profile_name_lower == 'default':
+                        specific_paths.append(path)
+                    # Skip Default paths if looking for a specific non-default profile
+                else:
+                    # Keep other paths (might be useful for some browsers)
+                    specific_paths.append(path)
+            
+            cookie_file = _expand_paths(specific_paths, os_name)
+            if cookie_file:
+                return cookie_file
+        
+        # If no profile_name specified or specific profile not found, use default behavior
+        # This will find the first available cookie file (usually Default)
+        return _expand_paths(cookie_paths, os_name)
+
     def __str__(self):
         return self.browser
+
+    @classmethod
+    def list_profiles(cls, browser: str, linux_cookies=None, windows_cookies=None, osx_cookies=None):
+        """List all available profiles for this browser type"""
+        profiles = []
+        
+        if sys.platform == 'darwin':
+            cookie_paths = osx_cookies or []
+        elif sys.platform.startswith('linux') or 'bsd' in sys.platform.lower():
+            cookie_paths = linux_cookies or []
+        elif sys.platform == "win32":
+            cookie_paths = windows_cookies or []
+        else:
+            return profiles
+        
+        if not cookie_paths:
+            return profiles
+        
+        # Find User Data directory by looking at cookie paths
+        user_data_dirs = set()
+        
+        # Try to find existing cookie files to determine User Data location
+        for path_template in cookie_paths:
+            # Expand paths to find existing directories
+            if sys.platform == 'win32':
+                if isinstance(path_template, dict):
+                    expanded_path = _expand_win_path(path_template)
+                else:
+                    continue
+            else:
+                expanded_path = os.path.expanduser(path_template)
+            
+            # Try glob pattern to find actual files
+            if 'Profile *' in expanded_path or 'Default' in expanded_path:
+                # Replace wildcards to find actual paths
+                if 'Profile *' in expanded_path:
+                    # Try to find all Profile directories
+                    base_path = expanded_path.replace('Profile */Cookies', '').replace('Profile *\\Cookies', '')
+                    if os.path.isdir(base_path):
+                        try:
+                            for item in os.listdir(base_path):
+                                if item.startswith('Profile ') or item == 'Default':
+                                    user_data_dirs.add(base_path)
+                                    break
+                        except (OSError, PermissionError):
+                            pass
+                elif 'Default' in expanded_path:
+                    # Extract User Data directory
+                    if 'User Data' in expanded_path:
+                        user_data_idx = expanded_path.find('User Data')
+                        if user_data_idx != -1:
+                            user_data_dir = expanded_path[:user_data_idx + len('User Data')]
+                            if os.path.isdir(user_data_dir):
+                                user_data_dirs.add(user_data_dir)
+                    else:
+                        # Unix path - go up to find the directory containing Default
+                        path_parts = expanded_path.split(os.sep)
+                        for i in range(len(path_parts) - 1, 0, -1):
+                            test_dir = os.sep.join(path_parts[:i])
+                            if os.path.isdir(test_dir):
+                                try:
+                                    for item in os.listdir(test_dir):
+                                        if item == 'Default' or item.startswith('Profile '):
+                                            user_data_dirs.add(test_dir)
+                                            break
+                                except (OSError, PermissionError):
+                                    pass
+        
+        # Now scan each User Data directory for profiles
+        for user_data_dir in user_data_dirs:
+            try:
+                for item in os.listdir(user_data_dir):
+                    item_path = os.path.join(user_data_dir, item)
+                    if os.path.isdir(item_path):
+                        # Check if it's a profile directory
+                        if item == 'Default':
+                            if 'Default' not in profiles:
+                                profiles.append('Default')
+                        elif item.startswith('Profile '):
+                            profile_name = item
+                            if profile_name not in profiles:
+                                profiles.append(profile_name)
+                        # Also check if it contains a Cookies file (might be a profile)
+                        elif os.path.exists(os.path.join(item_path, 'Cookies')):
+                            if item not in profiles:
+                                profiles.append(item)
+            except (OSError, PermissionError):
+                continue
+        
+        return sorted(profiles)
 
     def load(self):
         """Load sqlite cookies into a cookiejar"""
@@ -649,7 +787,7 @@ class ChromiumBased:
 class Chrome(ChromiumBased):
     """Class for Google Chrome"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': _genarate_nix_paths_chromium(
                 [
@@ -685,13 +823,45 @@ class Chrome(ChromiumBased):
             'osx_key_user': 'Chrome'
         }
         super().__init__(browser='Chrome', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Chrome profiles"""
+        args = {
+            'linux_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/.config/google-chrome{channel}/Default/Cookies',
+                    '~/.config/google-chrome{channel}/Profile */Cookies',
+                    '~/.var/app/com.google.Chrome/config/google-chrome{channel}/Default/Cookies',
+                    '~/.var/app/com.google.Chrome/config/google-chrome{channel}/Profile */Cookies'
+                ],
+                channel=['', '-beta', '-unstable']
+            ),
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Google\\Chrome{channel}\\User Data\\Default\\Cookies',
+                    'Google\\Chrome{channel}\\User Data\\Default\\Network\\Cookies',
+                    'Google\\Chrome{channel}\\User Data\\Profile *\\Cookies',
+                    'Google\\Chrome{channel}\\User Data\\Profile *\\Network\\Cookies'
+                ],
+                channel=['', ' Beta', ' Dev']
+            ),
+            'osx_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/Library/Application Support/Google/Chrome{channel}/Default/Cookies',
+                    '~/Library/Application Support/Google/Chrome{channel}/Profile */Cookies'
+                ],
+                channel=['', ' Beta', ' Dev']
+            )
+        }
+        return ChromiumBased.list_profiles('Chrome', **args)
 
 
 class Arc(ChromiumBased):
     """Class for Arc"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'osx_cookies': _genarate_nix_paths_chromium(
                 [
@@ -705,13 +875,27 @@ class Arc(ChromiumBased):
             'osx_key_user': 'Arc'
         }
         super().__init__(browser='Arc', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Arc profiles"""
+        args = {
+            'osx_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/Library/Application Support/Arc/User Data/Default/Cookies',
+                    '~/Library/Application Support/Arc/User Data/Profile */Cookies'
+                ],
+                channel=['']
+            )
+        }
+        return ChromiumBased.list_profiles('Arc', **args)
 
 
 class Chromium(ChromiumBased):
     """Class for Chromium"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': [
                 '~/.config/chromium/Default/Cookies',
@@ -739,13 +923,38 @@ class Chromium(ChromiumBased):
             'osx_key_user': 'Chromium'
         }
         super().__init__(browser='Chromium', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Chromium profiles"""
+        args = {
+            'linux_cookies': [
+                '~/.config/chromium/Default/Cookies',
+                '~/.config/chromium/Profile */Cookies',
+                '~/.var/app/org.chromium.Chromium/config/chromium/Default/Cookies',
+                '~/.var/app/org.chromium.Chromium/config/chromium/Profile */Cookies'
+            ],
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Chromium\\User Data\\Default\\Cookies',
+                    'Chromium\\User Data\\Default\\Network\\Cookies',
+                    'Chromium\\User Data\\Profile *\\Cookies',
+                    'Chromium\\User Data\\Profile *\\Network\\Cookies'
+                ]
+            ),
+            'osx_cookies': [
+                '~/Library/Application Support/Chromium/Default/Cookies',
+                '~/Library/Application Support/Chromium/Profile */Cookies'
+            ]
+        }
+        return ChromiumBased.list_profiles('Chromium', **args)
 
 
 class Opera(ChromiumBased):
     """Class for Opera"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': [
                 '~/.config/opera/Cookies',
@@ -776,13 +985,40 @@ class Opera(ChromiumBased):
             'osx_key_user': 'Opera'
         }
         super().__init__(browser='Opera', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Opera profiles"""
+        args = {
+            'linux_cookies': [
+                '~/.config/opera/Cookies',
+                '~/.config/opera-beta/Cookies',
+                '~/.config/opera-developer/Cookies',
+                '~/.var/app/com.opera.Opera/config/opera/Cookies',
+                '~/.var/app/com.opera.Opera/config/opera-beta/Cookies',
+                '~/.var/app/com.opera.Opera/config/opera-developer/Cookies'
+            ],
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Opera Software\\Opera {channel}\\Cookies',
+                    'Opera Software\\Opera {channel}\\Network\\Cookies'
+                ],
+                channel=['Stable', 'Next', 'Developer']
+            ),
+            'osx_cookies': [
+                '~/Library/Application Support/com.operasoftware.Opera/Cookies',
+                '~/Library/Application Support/com.operasoftware.OperaNext/Cookies',
+                '~/Library/Application Support/com.operasoftware.OperaDeveloper/Cookies'
+            ]
+        }
+        return ChromiumBased.list_profiles('Opera', **args)
 
 
 class OperaGX(ChromiumBased):
     """Class for Opera GX"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': [],  # Not available on Linux
             'windows_cookies': _genarate_win_paths_chromium(
@@ -802,11 +1038,27 @@ class OperaGX(ChromiumBased):
             'osx_key_user': 'Opera'
         }
         super().__init__(browser='Opera GX', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Opera GX profiles"""
+        args = {
+            'linux_cookies': [],  # Not available on Linux
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Opera Software\\Opera GX {channel}\\Cookies',
+                    'Opera Software\\Opera GX {channel}\\Network\\Cookies'
+                ],
+                channel=['Stable']
+            ),
+            'osx_cookies': ['~/Library/Application Support/com.operasoftware.OperaGX/Cookies']
+        }
+        return ChromiumBased.list_profiles('Opera GX', **args)
 
 
 class Brave(ChromiumBased):
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': _genarate_nix_paths_chromium(
                 [
@@ -842,13 +1094,45 @@ class Brave(ChromiumBased):
             'osx_key_user': 'Brave'
         }
         super().__init__(browser='Brave', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Brave profiles"""
+        args = {
+            'linux_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/.config/BraveSoftware/Brave-Browser{channel}/Default/Cookies',
+                    '~/.config/BraveSoftware/Brave-Browser{channel}/Profile */Cookies',
+                    '~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser{channel}/Default/Cookies',
+                    '~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser{channel}/Profile */Cookies'
+                ],
+                channel=['', '-Beta', '-Dev', '-Nightly']
+            ),
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'BraveSoftware\\Brave-Browser{channel}\\User Data\\Default\\Cookies',
+                    'BraveSoftware\\Brave-Browser{channel}\\User Data\\Default\\Network\\Cookies',
+                    'BraveSoftware\\Brave-Browser{channel}\\User Data\\Profile *\\Cookies',
+                    'BraveSoftware\\Brave-Browser{channel}\\User Data\\Profile *\\Network\\Cookies'
+                ],
+                channel=['', '-Beta', '-Dev', '-Nightly']
+            ),
+            'osx_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/Library/Application Support/BraveSoftware/Brave-Browser{channel}/Default/Cookies',
+                    '~/Library/Application Support/BraveSoftware/Brave-Browser{channel}/Profile */Cookies'
+                ],
+                channel=['', '-Beta', '-Dev', '-Nightly']
+            )
+        }
+        return ChromiumBased.list_profiles('Brave', **args)
 
 
 class Edge(ChromiumBased):
     """Class for Microsoft Edge"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': _genarate_nix_paths_chromium(
                 [
@@ -884,13 +1168,45 @@ class Edge(ChromiumBased):
             'osx_key_user': 'Microsoft Edge'
         }
         super().__init__(browser='Edge', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Edge profiles"""
+        args = {
+            'linux_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/.config/microsoft-edge{channel}/Default/Cookies',
+                    '~/.config/microsoft-edge{channel}/Profile */Cookies',
+                    "~/.var/app/com.microsoft.Edge/config/microsoft-edge{channel}/Default/Cookies",
+                    "~/.var/app/com.microsoft.Edge/config/microsoft-edge{channel}/Profile */Cookies",
+                ],
+                channel=['', '-beta', '-dev']
+            ),
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Microsoft\\Edge{channel}\\User Data\\Default\\Cookies',
+                    'Microsoft\\Edge{channel}\\User Data\\Default\\Network\\Cookies',
+                    'Microsoft\\Edge{channel}\\User Data\\Profile *\\Cookies',
+                    'Microsoft\\Edge{channel}\\User Data\\Profile *\\Network\\Cookies'
+                ],
+                channel=['', ' Beta', ' Dev', ' SxS']
+            ),
+            'osx_cookies': _genarate_nix_paths_chromium(
+                [
+                    '~/Library/Application Support/Microsoft Edge{channel}/Default/Cookies',
+                    '~/Library/Application Support/Microsoft Edge{channel}/Profile */Cookies'
+                ],
+                channel=['', ' Beta', ' Dev', ' Canary']
+            )
+        }
+        return ChromiumBased.list_profiles('Edge', **args)
 
 
 class Vivaldi(ChromiumBased):
     """Class for Vivaldi Browser"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_cookies': [
                 '~/.config/vivaldi/Default/Cookies',
@@ -920,14 +1236,42 @@ class Vivaldi(ChromiumBased):
             'osx_key_user': 'Vivaldi'
         }
         super().__init__(browser='Vivaldi', cookie_file=cookie_file,
-                         domain_name=domain_name, key_file=key_file, **args)
+                         domain_name=domain_name, key_file=key_file, profile_name=profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Vivaldi profiles"""
+        args = {
+            'linux_cookies': [
+                '~/.config/vivaldi/Default/Cookies',
+                '~/.config/vivaldi/Profile */Cookies',
+                '~/.config/vivaldi-snapshot/Default/Cookies',
+                '~/.config/vivaldi-snapshot/Profile */Cookies',
+                '~/.var/app/com.vivaldi.Vivaldi/config/vivaldi/Default/Cookies',
+                '~/.var/app/com.vivaldi.Vivaldi/config/vivaldi/Profile */Cookies'
+            ],
+            'windows_cookies': _genarate_win_paths_chromium(
+                [
+                    'Vivaldi\\User Data\\Default\\Cookies',
+                    'Vivaldi\\User Data\\Default\\Network\\Cookies',
+                    'Vivaldi\\User Data\\Profile *\\Cookies',
+                    'Vivaldi\\User Data\\Profile *\\Network\\Cookies'
+                ]
+            ),
+            'osx_cookies': [
+                '~/Library/Application Support/Vivaldi/Default/Cookies',
+                '~/Library/Application Support/Vivaldi/Profile */Cookies'
+            ]
+        }
+        return ChromiumBased.list_profiles('Vivaldi', **args)
 
 
 class FirefoxBased:
     """Superclass for Firefox based browsers"""
 
-    def __init__(self, browser_name, cookie_file=None, domain_name="", key_file=None, **kwargs):
+    def __init__(self, browser_name, cookie_file=None, domain_name="", key_file=None, profile_name=None, **kwargs):
         self.browser_name = browser_name
+        self.profile_name = profile_name
         self.cookie_file = cookie_file or self.__find_cookie_file(**kwargs)
         # current sessions are saved in sessionstore.js
         self.session_file = os.path.join(
@@ -941,7 +1285,32 @@ class FirefoxBased:
         return self.browser_name
 
     @staticmethod
-    def get_default_profile(user_data_path):
+    def list_profiles(user_data_path):
+        """List all available profiles from profiles.ini"""
+        profiles = []
+        config = configparser.ConfigParser()
+        profiles_ini_path = glob.glob(os.path.join(
+            user_data_path + '**', 'profiles.ini'))
+        
+        if not profiles_ini_path:
+            return profiles
+        
+        profiles_ini_path = profiles_ini_path[0]
+        config.read(profiles_ini_path, encoding="utf8")
+        
+        for section in config.sections():
+            if section.startswith('Profile'):
+                profile_name = config[section].get('Name', '')
+                profile_path = config[section].get('Path', '')
+                # Use name if available, otherwise use path
+                display_name = profile_name if profile_name else profile_path
+                if display_name and display_name not in profiles:
+                    profiles.append(display_name)
+        
+        return sorted(profiles)
+
+    @staticmethod
+    def get_default_profile(user_data_path, profile_name=None):
         config = configparser.ConfigParser()
         profiles_ini_path = glob.glob(os.path.join(
             user_data_path + '**', 'profiles.ini'))
@@ -953,6 +1322,27 @@ class FirefoxBased:
         profiles_ini_path = profiles_ini_path[0]
         config.read(profiles_ini_path, encoding="utf8")
 
+        # If profile_name is specified, try to find that specific profile
+        if profile_name:
+            for section in config.sections():
+                if section.startswith('Profile'):
+                    # Check if this is the profile we're looking for
+                    section_profile_name = config[section].get('Name', '')
+                    section_profile_path = config[section].get('Path', '')
+                    
+                    # Match by name, path, or section number (e.g., "Profile0" -> "0")
+                    section_number = section.replace('Profile', '') if section.startswith('Profile') else None
+                    if (section_profile_name == profile_name or 
+                        section_profile_path == profile_name or
+                        section_number == profile_name or
+                        section == profile_name):
+                        absolute = config[section].get('IsRelative') == '0'
+                        return section_profile_path if absolute else os.path.join(os.path.dirname(profiles_ini_path), section_profile_path)
+            
+            # If profile not found by name, raise an error
+            raise BrowserCookieError(f'Profile "{profile_name}" not found in profiles.ini')
+
+        # Default behavior: find the default profile
         profile_path = None
         for section in config.sections():
             if section.startswith('Install'):
@@ -997,14 +1387,16 @@ class FirefoxBased:
             raise BrowserCookieError(
                 'Unsupported operating system: ' + sys.platform)
 
-        cookie_files = glob.glob(os.path.join(FirefoxBased.get_default_profile(user_data_path), 'cookies.sqlite')) \
+        profile_path = FirefoxBased.get_default_profile(user_data_path, self.profile_name)
+        cookie_files = glob.glob(os.path.join(profile_path, 'cookies.sqlite')) \
             or cookie_files
 
         if cookie_files:
             return cookie_files[0]
         else:
             raise BrowserCookieError(
-                f'Failed to find {self.browser_name} cookie file')
+                f'Failed to find {self.browser_name} cookie file' + 
+                (f' for profile "{self.profile_name}"' if self.profile_name else ''))
 
     @staticmethod
     def __create_session_cookie(cookie_json):
@@ -1072,7 +1464,7 @@ class FirefoxBased:
 class Firefox(FirefoxBased):
     """Class for Firefox"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_data_dirs': [
                 '~/snap/firefox/common/.mozilla/firefox',
@@ -1086,13 +1478,57 @@ class Firefox(FirefoxBased):
                 '~/Library/Application Support/Firefox'
             ]
         }
-        super().__init__('Firefox', cookie_file, domain_name, key_file, **args)
+        super().__init__('Firefox', cookie_file, domain_name, key_file, profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available Firefox profiles"""
+        args = {
+            'linux_data_dirs': [
+                '~/snap/firefox/common/.mozilla/firefox',
+                '~/.mozilla/firefox'
+            ],
+            'windows_data_dirs': [
+                {'env': 'APPDATA', 'path': r'Mozilla\Firefox'},
+                {'env': 'LOCALAPPDATA', 'path': r'Mozilla\Firefox'}
+            ],
+            'osx_data_dirs': [
+                '~/Library/Application Support/Firefox'
+            ]
+        }
+        return cls._list_profiles_from_dirs(**args)
+
+    @classmethod
+    def _list_profiles_from_dirs(cls, linux_data_dirs=None, windows_data_dirs=None, osx_data_dirs=None):
+        """Helper method to list profiles from data directories"""
+        if sys.platform == 'darwin':
+            data_dirs = osx_data_dirs or []
+        elif sys.platform.startswith('linux') or 'bsd' in sys.platform.lower():
+            data_dirs = linux_data_dirs or []
+        elif sys.platform == 'win32':
+            data_dirs = windows_data_dirs or []
+        else:
+            return []
+        
+        all_profiles = []
+        for data_dir in data_dirs:
+            try:
+                if isinstance(data_dir, dict):
+                    expanded = _expand_win_path(data_dir)
+                else:
+                    expanded = os.path.expanduser(data_dir)
+                if os.path.isdir(expanded):
+                    profiles = FirefoxBased.list_profiles(expanded)
+                    all_profiles.extend(profiles)
+            except (OSError, BrowserCookieError):
+                continue
+        return sorted(list(set(all_profiles)))
 
 
 class LibreWolf(FirefoxBased):
     """Class for LibreWolf"""
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None):
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None):
         args = {
             'linux_data_dirs': [
                 '~/snap/librewolf/common/.librewolf',
@@ -1106,7 +1542,25 @@ class LibreWolf(FirefoxBased):
                 '~/Library/Application Support/librewolf'
             ]
         }
-        super().__init__('LibreWolf', cookie_file, domain_name, key_file, **args)
+        super().__init__('LibreWolf', cookie_file, domain_name, key_file, profile_name, **args)
+
+    @classmethod
+    def list_profiles(cls):
+        """List all available LibreWolf profiles"""
+        args = {
+            'linux_data_dirs': [
+                '~/snap/librewolf/common/.librewolf',
+                '~/.librewolf'
+            ],
+            'windows_data_dirs': [
+                {'env': 'APPDATA', 'path': 'librewolf'},
+                {'env': 'LOCALAPPDATA', 'path': 'librewolf'}
+            ],
+            'osx_data_dirs': [
+                '~/Library/Application Support/librewolf'
+            ]
+        }
+        return Firefox._list_profiles_from_dirs(**args)
 
 
 class Safari:
@@ -1120,7 +1574,7 @@ class Safari:
         '~/Library/Cookies/Cookies.binarycookies'
     ]
 
-    def __init__(self, cookie_file=None, domain_name="", key_file=None) -> None:
+    def __init__(self, cookie_file=None, domain_name="", key_file=None, profile_name=None) -> None:
         self.__offset = 0
         self.__domain_name = domain_name
         self.__buffer = None
@@ -1240,9 +1694,10 @@ class Lynx:
         '~/cookies'        # MS-DOS
     ]
 
-    def __init__(self, cookie_file=None, domain_name=""):
+    def __init__(self, cookie_file=None, domain_name="", profile_name=None):
         self.cookie_file = _expand_paths(cookie_file or self.lynx_cookies, 'linux')
         self.domain_name = domain_name
+        self.profile_name = profile_name
 
     def load(self):
         cj = http.cookiejar.CookieJar()
@@ -1276,9 +1731,10 @@ class W3m:
         '~/.w3m/cookie'
     ]
 
-    def __init__(self, cookie_file=None, domain_name=""):
+    def __init__(self, cookie_file=None, domain_name="", profile_name=None):
         self.cookie_file = _expand_paths(cookie_file or self.w3m_cookies, 'linux')
         self.domain_name = domain_name
+        self.profile_name = profile_name
 
     def load(self):
         cj = http.cookiejar.CookieJar()
@@ -1313,112 +1769,234 @@ def create_cookie(host, path, secure, expires, name, value, http_only):
                                  {'HTTPOnly': ''} if http_only else {})
 
 
-def chrome(cookie_file=None, domain_name="", key_file=None):
+def chrome(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Chrome. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Chrome(cookie_file, domain_name, key_file).load()
+    return Chrome(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def arc(cookie_file=None, domain_name="", key_file=None):
+def arc(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Arc. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Arc(cookie_file, domain_name, key_file).load()
+    return Arc(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def chromium(cookie_file=None, domain_name="", key_file=None):
+def chromium(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Chromium. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Chromium(cookie_file, domain_name, key_file).load()
+    return Chromium(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def opera(cookie_file=None, domain_name="", key_file=None):
+def opera(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Opera. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Opera(cookie_file, domain_name, key_file).load()
+    return Opera(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def opera_gx(cookie_file=None, domain_name="", key_file=None):
+def opera_gx(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Opera GX. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return OperaGX(cookie_file, domain_name, key_file).load()
+    return OperaGX(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def brave(cookie_file=None, domain_name="", key_file=None):
+def brave(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by Brave. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Brave(cookie_file, domain_name, key_file).load()
+    return Brave(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def edge(cookie_file=None, domain_name="", key_file=None):
+def edge(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Microsoft Edge. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Edge(cookie_file, domain_name, key_file).load()
+    return Edge(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def vivaldi(cookie_file=None, domain_name="", key_file=None):
+def vivaldi(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies used by Vivaldi Browser. Optionally pass in a
-    domain name to only load cookies from the specified domain
+    domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (e.g., "Default", "Profile 1")
     """
-    return Vivaldi(cookie_file, domain_name, key_file).load()
+    return Vivaldi(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def firefox(cookie_file=None, domain_name="", key_file=None):
+def firefox(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by Firefox. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (profile name from profiles.ini)
     """
-    return Firefox(cookie_file, domain_name, key_file).load()
+    return Firefox(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def librewolf(cookie_file=None, domain_name="", key_file=None):
+def librewolf(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by LibreWolf. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain, and a profile_name
+    to load cookies from a specific profile (profile name from profiles.ini)
     """
-    return LibreWolf(cookie_file, domain_name, key_file).load()
+    return LibreWolf(cookie_file, domain_name, key_file, profile_name).load()
 
 
-def safari(cookie_file=None, domain_name="", key_file=None):
+def safari(cookie_file=None, domain_name="", key_file=None, profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by Safari. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain.
+    Note: Safari does not support multiple profiles.
     """
-    return Safari(cookie_file, domain_name, key_file).load()
+    return Safari(cookie_file, domain_name, key_file, profile_name).load()
 
-def lynx(cookie_file=None, domain_name=""):
+def lynx(cookie_file=None, domain_name="", profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by Lynx. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain.
+    Note: Lynx does not support multiple profiles.
     """
-    return Lynx(cookie_file, domain_name).load()
+    return Lynx(cookie_file, domain_name, profile_name).load()
 
 
-def w3m(cookie_file=None, domain_name=""):
+def w3m(cookie_file=None, domain_name="", profile_name=None):
     """Returns a cookiejar of the cookies and sessions used by W3m. Optionally
-    pass in a domain name to only load cookies from the specified domain
+    pass in a domain name to only load cookies from the specified domain.
+    Note: W3m does not support multiple profiles.
     """
-    return W3m(cookie_file, domain_name).load()
+    return W3m(cookie_file, domain_name, profile_name).load()
 
 all_browsers = [chrome, chromium, opera, opera_gx, brave, edge, vivaldi, firefox, librewolf, safari, lynx, w3m, arc]
 
-def load(domain_name=""):
+def list_chrome_profiles():
+    """List all available Chrome profiles"""
+    return Chrome.list_profiles()
+
+
+def list_arc_profiles():
+    """List all available Arc profiles"""
+    return Arc.list_profiles()
+
+
+def list_chromium_profiles():
+    """List all available Chromium profiles"""
+    return Chromium.list_profiles()
+
+
+def list_opera_profiles():
+    """List all available Opera profiles"""
+    return Opera.list_profiles()
+
+
+def list_opera_gx_profiles():
+    """List all available Opera GX profiles"""
+    return OperaGX.list_profiles()
+
+
+def list_brave_profiles():
+    """List all available Brave profiles"""
+    return Brave.list_profiles()
+
+
+def list_edge_profiles():
+    """List all available Edge profiles"""
+    return Edge.list_profiles()
+
+
+def list_vivaldi_profiles():
+    """List all available Vivaldi profiles"""
+    return Vivaldi.list_profiles()
+
+
+def list_firefox_profiles():
+    """List all available Firefox profiles"""
+    return Firefox.list_profiles()
+
+
+def list_librewolf_profiles():
+    """List all available LibreWolf profiles"""
+    return LibreWolf.list_profiles()
+
+
+def list_profiles(browser_name=None):
+    """List profiles for a specific browser or all browsers
+    
+    Args:
+        browser_name: Name of browser (e.g., 'chrome', 'firefox'). If None, lists profiles for all browsers.
+    
+    Returns:
+        If browser_name is specified: list of profile names
+        If browser_name is None: dict mapping browser names to lists of profiles
+    """
+    browser_map = {
+        'chrome': list_chrome_profiles,
+        'arc': list_arc_profiles,
+        'chromium': list_chromium_profiles,
+        'opera': list_opera_profiles,
+        'opera_gx': list_opera_gx_profiles,
+        'opera-gx': list_opera_gx_profiles,
+        'brave': list_brave_profiles,
+        'edge': list_edge_profiles,
+        'vivaldi': list_vivaldi_profiles,
+        'firefox': list_firefox_profiles,
+        'librewolf': list_librewolf_profiles,
+    }
+    
+    if browser_name:
+        browser_name_lower = browser_name.lower().replace('-', '_')
+        if browser_name_lower in browser_map:
+            try:
+                return browser_map[browser_name_lower]()
+            except BrowserCookieError:
+                return []
+        return []
+    else:
+        # Return profiles for all browsers
+        result = {}
+        for name, func in browser_map.items():
+            try:
+                profiles = func()
+                if profiles:
+                    result[name] = profiles
+            except BrowserCookieError:
+                pass
+        return result
+
+
+def load(domain_name="", profile_name=None):
     """Try to load cookies from all supported browsers and return combined cookiejar
-    Optionally pass in a domain name to only load cookies from the specified domain
+    Optionally pass in a domain name to only load cookies from the specified domain,
+    and a profile_name to load cookies from a specific profile for each browser
     """
     cj = http.cookiejar.CookieJar()
     for cookie_fn in all_browsers:
         try:
-            for cookie in cookie_fn(domain_name=domain_name):
+            # Pass profile_name if the function accepts it
+            if profile_name:
+                try:
+                    cookies = cookie_fn(domain_name=domain_name, profile_name=profile_name)
+                except TypeError:
+                    # Some browsers (like lynx, w3m) might not support profile_name
+                    cookies = cookie_fn(domain_name=domain_name)
+            else:
+                cookies = cookie_fn(domain_name=domain_name)
+            for cookie in cookies:
                 cj.set_cookie(cookie)
         except BrowserCookieError:
             pass
     return cj
 
 
-__all__ = ['BrowserCookieError', 'load', 'all_browsers'] + all_browsers
+__all__ = ['BrowserCookieError', 'load', 'all_browsers', 'list_profiles',
+           'list_chrome_profiles', 'list_arc_profiles', 'list_chromium_profiles',
+           'list_opera_profiles', 'list_opera_gx_profiles', 'list_brave_profiles',
+           'list_edge_profiles', 'list_vivaldi_profiles', 'list_firefox_profiles',
+           'list_librewolf_profiles'] + all_browsers
 
 
 if __name__ == '__main__':

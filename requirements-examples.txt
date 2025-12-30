@@ -1,0 +1,9 @@
+# Dependencies for running examples
+# Install with: pip install -r requirements-examples.txt
+
+# Include core requirements
+-r requirements.txt
+
+# Additional dependencies for examples
+requests>=2.25.0
+

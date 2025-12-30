@@ -87,6 +87,110 @@ Alternatively if you are only interested in cookies from a specific domain, you 
 'richardpenman / home &mdash; Bitbucket'
 ```
 
+### Multi-Profile Support
+
+browser_cookie3 now supports loading cookies from specific browser profiles. This is useful when you have multiple profiles set up in your browser.
+
+#### Chromium-based browsers (Chrome, Edge, Brave, etc.)
+
+For Chromium-based browsers, profiles are typically named "Default", "Profile 1", "Profile 2", etc.:
+
+```python
+#!python
+
+>>> import browser_cookie3
+>>> import requests
+
+# Load cookies from the default profile (default behavior)
+>>> cj = browser_cookie3.chrome()
+
+# Load cookies from a specific profile
+>>> cj = browser_cookie3.chrome(profile_name="Profile 1")
+>>> cj = browser_cookie3.chrome(profile_name="Default")
+>>> cj = browser_cookie3.edge(profile_name="Profile 2")
+```
+
+#### Firefox-based browsers (Firefox, LibreWolf)
+
+For Firefox-based browsers, profiles are named according to your profiles.ini file:
+
+```python
+#!python
+
+>>> import browser_cookie3
+>>> import requests
+
+# Load cookies from default profile (default behavior)
+>>> cj = browser_cookie3.firefox()
+
+# Load cookies from a specific profile by name
+>>> cj = browser_cookie3.firefox(profile_name="default-release")
+>>> cj = browser_cookie3.librewolf(profile_name="Profile0")
+```
+
+#### Listing Available Profiles
+
+You can list all available profiles for any browser:
+
+```python
+#!python
+
+>>> import browser_cookie3
+
+# List profiles for a specific browser
+>>> profiles = browser_cookie3.list_chrome_profiles()
+>>> print(profiles)
+['Default', 'Profile 1', 'Profile 2']
+
+>>> profiles = browser_cookie3.list_firefox_profiles()
+>>> print(profiles)
+['default-release', 'Profile0', 'work-profile']
+
+# List profiles using the generic function
+>>> profiles = browser_cookie3.list_profiles('chrome')
+>>> print(profiles)
+['Default', 'Profile 1']
+
+# List profiles for all browsers
+>>> all_profiles = browser_cookie3.list_profiles()
+>>> print(all_profiles)
+{
+    'chrome': ['Default', 'Profile 1'],
+    'firefox': ['default-release'],
+    'edge': ['Default', 'Profile 1', 'Profile 2']
+}
+
+# Available list functions for each browser:
+>>> browser_cookie3.list_chrome_profiles()
+>>> browser_cookie3.list_chromium_profiles()
+>>> browser_cookie3.list_edge_profiles()
+>>> browser_cookie3.list_brave_profiles()
+>>> browser_cookie3.list_opera_profiles()
+>>> browser_cookie3.list_opera_gx_profiles()
+>>> browser_cookie3.list_vivaldi_profiles()
+>>> browser_cookie3.list_arc_profiles()
+>>> browser_cookie3.list_firefox_profiles()
+>>> browser_cookie3.list_librewolf_profiles()
+```
+
+#### Combining Profile Selection with Domain Filtering
+
+You can combine profile selection with domain filtering:
+
+```python
+#!python
+
+>>> import browser_cookie3
+>>> import requests
+
+# Load cookies from a specific profile and domain
+>>> cj = browser_cookie3.chrome(
+...     profile_name="Profile 1",
+...     domain_name="example.com"
+... )
+>>> r = requests.get('https://example.com', cookies=cj)
+```
+
 ## Command-line usage
 
 Run `browser-cookie --help` for all options. Brief examples:
@@ -103,6 +207,53 @@ $ browser-cookie --json --chrome stackoverflow.com acct
 
 $ browser-cookie nonexistent-domain.com nonexistent-cookie && echo "Cookie found" || echo "No cookie found"
 No cookie found
+```
+
+### Profile Selection via Command Line
+
+You can specify a profile using the `--profile` or `-p` option:
+
+```sh
+# Load cookies from a specific Chrome profile
+$ browser-cookie --chrome --profile "Profile 1" example.com cookie_name
+
+# Load cookies from a specific Firefox profile
+$ browser-cookie --firefox --profile "default-release" example.com cookie_name
+
+# List all available profiles for a browser
+$ browser-cookie --chrome --list-profiles
+Default
+Profile 1
+Profile 2
+
+$ browser-cookie --firefox --list-profiles
+default-release
+Profile0
+work-profile
+```
+
+## Advanced Features
+
+### Multi-Profile Support
+
+browser_cookie3 supports loading cookies from specific browser profiles. See [EXAMPLES.md](EXAMPLES.md) for detailed examples.
+
+**Quick Start:**
+```python
+# List available profiles
+profiles = browser_cookie3.list_chrome_profiles()
+
+# Load from specific profile
+cj = browser_cookie3.chrome(profile_name="Profile 1")
+```
+
+**Command Line:**
+```bash
+# List profiles
+$ browser-cookie --chrome --list-profiles
+
+# Use specific profile
+$ browser-cookie --chrome --profile "Profile 1" example.com cookie_name
 ```
 
 ## Fresh cookie files

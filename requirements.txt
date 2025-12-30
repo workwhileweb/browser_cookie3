@@ -1,0 +1,20 @@
+# Core dependencies for browser_cookie3
+# These are the minimum required dependencies for the library to function
+#
+# Platform-specific dependencies (jeepney, dbus-python, shadowcopy) are
+# automatically handled by pip when installing via setup.py or requirements-all.txt
+#
+# For a complete installation with all platform-specific dependencies, use:
+#   pip install -r requirements-all.txt
+# or simply:
+#   pip install browser-cookie3
+
+# Required on all platforms
+lz4>=0.10.0
+pycryptodomex>=3.4.0
+
+# Platform-specific dependencies (install separately if needed)
+# Linux/BSD (Python >= 3.7): jeepney>=0.4.0
+# Linux/BSD (Python < 3.7): dbus-python>=1.2.0
+# Windows (Python >= 3.7): shadowcopy>=0.1.0
+
