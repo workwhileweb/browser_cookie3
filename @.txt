@@ -1,1 +1,82 @@
 https://github.com/workwhileweb/browser_cookie3
+
+
+PS D:\github\browser_cookie3> uv run .\examples.py
+D:\github\browser_cookie3\.venv\Lib\site-packages\requests\__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(
+
+============================================================
+browser_cookie3 Multi-Profile Examples
+============================================================
+============================================================
+Example 1: Listing Available Profiles
+============================================================
+
+Chrome profiles: ['Default', 'Profile 2', 'Profile 3', 'Profile 5', 'Profile 6']
+Firefox profiles: []
+Edge profiles: ['Default']
+
+All browser profiles:
+  chrome: ['Default', 'Profile 2', 'Profile 3', 'Profile 5', 'Profile 6']
+  edge: ['Default']
+
+============================================================
+Example 2: Loading Cookies from Specific Profile
+============================================================
+
+Available Chrome profiles: ['Default', 'Profile 2', 'Profile 3', 'Profile 5', 'Profile 6']
+
+Loading cookies from profile: Profile 2
+
+Error loading from Profile 2: Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+Note: On Windows, make sure Chrome is closed and the Local State file is accessible.
+The encryption key is shared across all profiles and is stored in:
+  %LOCALAPPDATA%\Google\Chrome\User Data\Local State
+
+============================================================
+Example 3: Profile Selection + Domain Filtering
+============================================================
+
+Error: Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+
+============================================================
+Example 4: Firefox Profile Management
+============================================================
+
+Available Firefox profiles: []
+
+No Firefox profiles found
+
+============================================================
+Example 5: Iterating Through All Profiles
+============================================================
+
+Found 5 Chrome profiles
+  Default: Error - Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+  Profile 2: Error - Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+  Profile 3: Error - Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+  Profile 5: Error - Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+  Profile 6: Error - Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+
+============================================================
+Example 6: Loading from All Browsers with Profile
+============================================================
+
+Error: [Errno 13] Permission denied: 'C:\\Users\\TuanAdmin/cookies'
+
+============================================================
+Example 7: Practical Use Case
+============================================================
+
+Scenario: You have a work profile and personal profile in Chrome.
+You want to access a website using your work profile cookies.
+
+Available profiles: ['Default', 'Profile 2', 'Profile 3', 'Profile 5', 'Profile 6']
+
+No work profile found, using default profile
+
+Error: Unable to decrypt cookie with AES key. This may indicate the key is incorrect or the cookie was encrypted with a different key. Error: MAC check failed
+
+============================================================
+Examples completed!
+============================================================

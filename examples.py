@@ -3,45 +3,26 @@
 Examples demonstrating browser_cookie3 multi-profile support and profile listing features.
 
 This file contains practical examples of how to use the new profile-related features
-in browser_cookie3.
+in browser_cookie3. Focused on Chrome only.
 """
 
 import browser_cookie3
-import requests
 
 
 def example_list_profiles():
-    """Example: List all available profiles for different browsers"""
+    """Example: List all available Chrome profiles"""
     print("=" * 60)
-    print("Example 1: Listing Available Profiles")
+    print("Example 1: Listing Available Chrome Profiles")
     print("=" * 60)
     
     # List Chrome profiles
     try:
         chrome_profiles = browser_cookie3.list_chrome_profiles()
         print(f"\nChrome profiles: {chrome_profiles}")
+        return chrome_profiles
     except browser_cookie3.BrowserCookieError as e:
         print(f"\nChrome not found or no profiles: {e}")
-    
-    # List Firefox profiles
-    try:
-        firefox_profiles = browser_cookie3.list_firefox_profiles()
-        print(f"Firefox profiles: {firefox_profiles}")
-    except browser_cookie3.BrowserCookieError as e:
-        print(f"Firefox not found or no profiles: {e}")
-    
-    # List Edge profiles
-    try:
-        edge_profiles = browser_cookie3.list_edge_profiles()
-        print(f"Edge profiles: {edge_profiles}")
-    except browser_cookie3.BrowserCookieError as e:
-        print(f"Edge not found or no profiles: {e}")
-    
-    # List profiles for all browsers
-    print("\nAll browser profiles:")
-    all_profiles = browser_cookie3.list_profiles()
-    for browser, profiles in all_profiles.items():
-        print(f"  {browser}: {profiles}")
+        return []
 
 
 def example_load_from_specific_profile():
@@ -60,8 +41,17 @@ def example_load_from_specific_profile():
             if len(profiles) > 1:
                 profile_name = profiles[1]  # Use second profile
                 print(f"\nLoading cookies from profile: {profile_name}")
-                cj = browser_cookie3.chrome(profile_name=profile_name)
-                print(f"Loaded {len(list(cj))} cookies from {profile_name}")
+                try:
+                    cj = browser_cookie3.chrome(profile_name=profile_name)
+                    cookie_list = list(cj)
+                    print(f"Loaded {len(cookie_list)} cookies from {profile_name}")
+                    if cookie_list:
+                        print(f"Sample cookie domains: {set(c.domain for c in cookie_list[:5])}")
+                except browser_cookie3.BrowserCookieError as e:
+                    print(f"\nError loading from {profile_name}: {e}")
+                    print("Note: On Windows, make sure Chrome is closed and the Local State file is accessible.")
+                    print("The encryption key is shared across all profiles and is stored in:")
+                    print("  %LOCALAPPDATA%\\Google\\Chrome\\User Data\\Local State")
             else:
                 print("\nOnly default profile available, loading from default...")
                 cj = browser_cookie3.chrome()
@@ -98,37 +88,6 @@ def example_profile_with_domain_filter():
         print(f"\nError: {e}")
 
 
-def example_firefox_profiles():
-    """Example: Working with Firefox profiles"""
-    print("\n" + "=" * 60)
-    print("Example 4: Firefox Profile Management")
-    print("=" * 60)
-    
-    try:
-        # List Firefox profiles
-        profiles = browser_cookie3.list_firefox_profiles()
-        print(f"\nAvailable Firefox profiles: {profiles}")
-        
-        if profiles:
-            # Load from first profile
-            profile_name = profiles[0]
-            print(f"\nLoading cookies from profile: {profile_name}")
-            cj = browser_cookie3.firefox(profile_name=profile_name)
-            print(f"Loaded {len(list(cj))} cookies")
-            
-            # Try to make a request with the cookies
-            try:
-                r = requests.get('https://httpbin.org/cookies', cookies=cj, timeout=5)
-                print(f"\nTest request successful: {r.status_code}")
-            except Exception as e:
-                print(f"\nTest request failed: {e}")
-        else:
-            print("\nNo Firefox profiles found")
-            
-    except browser_cookie3.BrowserCookieError as e:
-        print(f"\nError: {e}")
-
-
 def example_iterate_all_profiles():
     """Example: Iterate through all profiles and load cookies"""
     print("\n" + "=" * 60)
@@ -151,23 +110,20 @@ def example_iterate_all_profiles():
         print(f"\nError: {e}")
 
 
-def example_load_all_browsers_with_profile():
-    """Example: Load cookies from all browsers using a specific profile"""
+def example_test_default_profile():
+    """Example: Test loading from default profile"""
     print("\n" + "=" * 60)
-    print("Example 6: Loading from All Browsers with Profile")
+    print("Example 4: Testing Default Profile")
     print("=" * 60)
     
-    # Load cookies from all browsers, using default profile for each
-    # (or specify a profile_name to use the same profile name across browsers)
     try:
-        cj = browser_cookie3.load(profile_name=None)  # None = use default for each
-        print(f"\nLoaded {len(list(cj))} total cookies from all browsers (default profiles)")
-        
-        # If you want to use a specific profile name across all browsers:
-        # Note: This will only work if all browsers have a profile with that name
-        # cj = browser_cookie3.load(profile_name="Default")
-        
-    except Exception as e:
+        print("\nLoading cookies from default Chrome profile...")
+        cj = browser_cookie3.chrome()
+        cookies = list(cj)
+        print(f"Successfully loaded {len(cookies)} cookies from default profile")
+        if cookies:
+            print(f"Sample domains: {set(c.domain for c in cookies[:10])}")
+    except browser_cookie3.BrowserCookieError as e:
         print(f"\nError: {e}")
 
 
@@ -215,16 +171,15 @@ def example_practical_use_case():
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("browser_cookie3 Multi-Profile Examples")
+    print("browser_cookie3 Chrome Profile Examples")
     print("=" * 60)
     
     # Run examples
-    example_list_profiles()
+    profiles = example_list_profiles()
+    example_test_default_profile()
     example_load_from_specific_profile()
     example_profile_with_domain_filter()
-    example_firefox_profiles()
     example_iterate_all_profiles()
-    example_load_all_browsers_with_profile()
     example_practical_use_case()
     
     print("\n" + "=" * 60)

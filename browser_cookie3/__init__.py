@@ -479,19 +479,32 @@ class ChromiumBased:
                 linux_cookies, 'linux')
 
         elif sys.platform == "win32":
+            # On Windows, the Local State file (containing the encryption key) is in the User Data directory
+            # and is shared across all profiles. We need to find it regardless of which profile we're using.
             key_file = self.key_file or _expand_paths(windows_keys, 'windows')
 
             if key_file:
-                with open(key_file, 'rb') as f:
-                    key_file_json = json.load(f)
-                    key64 = key_file_json['os_crypt']['encrypted_key'].encode(
-                        'utf-8')
+                try:
+                    with open(key_file, 'rb') as f:
+                        key_file_json = json.load(f)
+                        if 'os_crypt' not in key_file_json or 'encrypted_key' not in key_file_json['os_crypt']:
+                            raise BrowserCookieError(
+                                f'Invalid key file format in {key_file}. Missing os_crypt.encrypted_key.')
+                        key64 = key_file_json['os_crypt']['encrypted_key'].encode(
+                            'utf-8')
 
-                    # Decode Key, get rid of DPAPI prefix, unprotect data
-                    keydpapi = base64.standard_b64decode(key64)[5:]
-                    _, self.v10_key = _crypt_unprotect_data(
-                        keydpapi, is_key=True)
+                        # Decode Key, get rid of DPAPI prefix, unprotect data
+                        keydpapi = base64.standard_b64decode(key64)[5:]
+                        _, self.v10_key = _crypt_unprotect_data(
+                            keydpapi, is_key=True)
+                except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as e:
+                    raise BrowserCookieError(
+                        f'Failed to read or parse key file {key_file}: {e}')
+                except RuntimeError as e:
+                    raise BrowserCookieError(
+                        f'Failed to decrypt key from {key_file}: {e}')
             else:
+                # If key file not found, we'll try DPAPI directly (which may work for some cookies)
                 self.v10_key = None
 
             # get cookie file from APPDATA
@@ -679,6 +692,11 @@ class ChromiumBased:
                 # http.cookiejar stores cookies' expiration timestamps as SECONDS since the Unix epoch
                 # (1970-01-01 0:00:00 GMT, or None for session cookies.
                 host, path, secure, expires_nt_time_epoch, name, value, enc_value, http_only = item
+                
+                # Ensure enc_value is bytes (it should be from SQLite BLOB, but handle string case)
+                if isinstance(enc_value, str):
+                    enc_value = enc_value.encode('latin-1')
+                
                 if (expires_nt_time_epoch == 0):
                     expires = None
                 else:
@@ -715,13 +733,22 @@ class ChromiumBased:
 
     @staticmethod
     def _decrypt_windows_chromium(value, encrypted_value):
-
+        """Decrypt using Windows DPAPI (for pre-Chrome 80 cookies)"""
+        
         if len(value) != 0:
             return value
 
-        if encrypted_value == b"":
+        if not encrypted_value or encrypted_value == b"":
             return ""
 
+        # Ensure encrypted_value is bytes
+        if not isinstance(encrypted_value, bytes):
+            try:
+                encrypted_value = encrypted_value.encode('latin-1')
+            except (UnicodeEncodeError, AttributeError):
+                raise RuntimeError('Invalid encrypted_value format for DPAPI')
+
+        # Try DPAPI decryption for older cookies (pre-Chrome 80)
         _, data = _crypt_unprotect_data(encrypted_value)
         assert isinstance(data, bytes)
         return data.decode()
@@ -730,30 +757,84 @@ class ChromiumBased:
         """Decrypt encoded cookies"""
 
         if sys.platform == 'win32':
+            # Check if cookie is already decrypted (value is not empty)
+            if len(value) != 0:
+                return value
+
+            # Ensure encrypted_value is bytes
+            if isinstance(encrypted_value, str):
+                # If it's a string, try to encode it back to bytes
+                # This shouldn't happen normally, but handle it just in case
+                try:
+                    encrypted_value = encrypted_value.encode('latin-1')
+                except (UnicodeEncodeError, AttributeError):
+                    encrypted_value = b''
+
+            if encrypted_value == b"" or len(encrypted_value) == 0:
+                return ""
+
+            # Check if this is AES-encrypted (Chrome 80+)
+            # AES-encrypted cookies start with 'v10' or 'v11' as bytes
+            if len(encrypted_value) >= 3:
+                prefix = encrypted_value[:3]
+                if prefix == b'v10' or prefix == b'v11':
+                    # Use AES decryption
+                    if not self.v10_key:
+                        raise BrowserCookieError(
+                            'Cookie is AES-encrypted but no AES key found. '
+                            'Make sure the Local State file is accessible and contains a valid encryption key.')
+                    
+                    # Encrypted cookies should be prefixed with 'v10' according to the Chromium code
+                    encrypted_value = encrypted_value[3:]
+                    if len(encrypted_value) < 28:  # Need at least 12 (nonce) + 16 (tag)
+                        raise BrowserCookieError('Encrypted value too short after removing prefix')
+                    
+                    nonce, tag = encrypted_value[:12], encrypted_value[-16:]
+                    aes = AES.new(self.v10_key, AES.MODE_GCM, nonce=nonce)
+
+                    try:
+                        data = aes.decrypt_and_verify(encrypted_value[12:-16], tag)
+                    except ValueError as e:
+                        raise BrowserCookieError(
+                            f'Unable to decrypt cookie with AES key. This may indicate the key is incorrect '
+                            f'or the cookie was encrypted with a different key. Error: {e}')
+                    
+                    if has_integrity_check_for_cookie_domain:
+                        if len(data) < 32:
+                            raise BrowserCookieError('Cookie data too short for integrity check')
+                        data = data[32:]
+                    return data.decode()
+            
+            # Try DPAPI decryption for older cookies (pre-Chrome 80)
+            # Ensure encrypted_value is bytes for DPAPI
+            if not isinstance(encrypted_value, bytes):
+                try:
+                    encrypted_value = encrypted_value.encode('latin-1')
+                except (UnicodeEncodeError, AttributeError):
+                    raise BrowserCookieError('Invalid encrypted_value format')
+            
             try:
                 return self._decrypt_windows_chromium(value, encrypted_value)
-
-            # Fix for change in Chrome 80
-            except RuntimeError:  # Failed to decrypt the cipher text with DPAPI
-                if not self.v10_key:
-                    raise RuntimeError(
-                        'Failed to decrypt the cipher text with DPAPI and no AES key.')
-                # Encrypted cookies should be prefixed with 'v10' according to the
-                # Chromium code. Strip it off.
-                encrypted_value = encrypted_value[3:]
-                nonce, tag = encrypted_value[:12], encrypted_value[-16:]
-                aes = AES.new(self.v10_key, AES.MODE_GCM, nonce=nonce)
-
-                # will rise Value Error: MAC check failed byte if the key is wrong,
-                # probably we did not got the key and used peanuts
-                try:
-                    data = aes.decrypt_and_verify(encrypted_value[12:-16], tag)
-                except ValueError:
-                    raise BrowserCookieError(
-                        'Unable to get key for cookie decryption')
-                if has_integrity_check_for_cookie_domain:
-                    data = data[32:]
-                return data.decode()
+            except RuntimeError as e:
+                # If DPAPI fails and we have an AES key, try AES decryption as fallback
+                # Some cookies might be AES-encrypted but missing the prefix or have a different format
+                if self.v10_key and len(encrypted_value) >= 15:  # Minimum size for AES-GCM
+                    # Try AES-GCM decryption (Chrome 80+ format)
+                    # Assume it might be v10 format even without prefix
+                    if len(encrypted_value) >= 28:  # Need at least 12 (nonce) + 16 (tag)
+                        nonce, tag = encrypted_value[:12], encrypted_value[-16:]
+                        aes = AES.new(self.v10_key, AES.MODE_GCM, nonce=nonce)
+                        try:
+                            data = aes.decrypt_and_verify(encrypted_value[12:-16], tag)
+                            if has_integrity_check_for_cookie_domain and len(data) >= 32:
+                                data = data[32:]
+                            return data.decode()
+                        except ValueError:
+                            pass  # AES also failed, continue to error
+                # If all decryption methods failed, raise error
+                raise BrowserCookieError(
+                    f'Failed to decrypt cookie with DPAPI. This may indicate the cookie format is '
+                    f'unexpected, Chrome is still running, or the encryption key is incorrect. Error: {e}')
 
         if value or (encrypted_value[:3] not in [b'v11', b'v10']):
             return value
